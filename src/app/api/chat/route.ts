@@ -1,8 +1,9 @@
 import {
-  convertToModelMessages,
-  streamText,
+  createUIMessageStream,
+  createUIMessageStreamResponse,
   type UIMessage,
 } from "ai";
+import { GoogleGenAI, type Content } from "@google/genai";
 
 import {
   curriculumSnapshot,
@@ -12,7 +13,8 @@ import {
 
 export const maxDuration = 60;
 
-const MODEL_ID = "google/gemini-3.5-flash";
+const MODEL_ID = "gemini-3.5-flash";
+const TEXT_PART_ID = "gemini-response";
 
 type ChatRequestBody = {
   messages?: UIMessage[];
@@ -50,6 +52,39 @@ function validateAccess(req: Request, body: ChatRequestBody) {
   }
 
   return { ok: true as const };
+}
+
+function getGoogleClient() {
+  const apiKey = process.env.GEMINI_API_KEY;
+
+  if (!apiKey) {
+    throw new Error("GEMINI_API_KEY is not configured.");
+  }
+
+  return new GoogleGenAI({ apiKey });
+}
+
+function uiMessagesToGeminiContents(messages: UIMessage[]): Content[] {
+  const contents: Content[] = [];
+
+  for (const message of messages) {
+    const text = message.parts
+      .filter((part) => part.type === "text")
+      .map((part) => part.text)
+      .join("\n")
+      .trim();
+
+    if (!text) {
+      continue;
+    }
+
+    contents.push({
+      role: message.role === "assistant" ? "model" : "user",
+      parts: [{ text }],
+    });
+  }
+
+  return contents;
 }
 
 function buildSystemPrompt(topicId: string | undefined, modeId: string | undefined) {
@@ -101,13 +136,8 @@ export async function POST(req: Request) {
     return jsonError("Request body must include a messages array.", 400);
   }
 
-  const result = streamText({
-    model: MODEL_ID,
-    system: buildSystemPrompt(body.topicId, body.studyMode),
-    messages: await convertToModelMessages(body.messages),
-  });
-
-  return result.toUIMessageStreamResponse({
+  const stream = createUIMessageStream<UIMessage>({
+    originalMessages: body.messages,
     onError: (error) => {
       if (error == null) {
         return "Unknown model error.";
@@ -119,5 +149,34 @@ export async function POST(req: Request) {
 
       return "The model request failed.";
     },
+    execute: async ({ writer }) => {
+      const ai = getGoogleClient();
+      const responseStream = await ai.models.generateContentStream({
+        model: MODEL_ID,
+        contents: uiMessagesToGeminiContents(body.messages ?? []),
+        config: {
+          systemInstruction: buildSystemPrompt(body.topicId, body.studyMode),
+          temperature: 0.45,
+          topP: 0.9,
+          maxOutputTokens: 1800,
+        },
+      });
+
+      writer.write({ type: "text-start", id: TEXT_PART_ID });
+
+      for await (const chunk of responseStream) {
+        if (chunk.text) {
+          writer.write({
+            type: "text-delta",
+            id: TEXT_PART_ID,
+            delta: chunk.text,
+          });
+        }
+      }
+
+      writer.write({ type: "text-end", id: TEXT_PART_ID });
+    },
   });
+
+  return createUIMessageStreamResponse({ stream });
 }

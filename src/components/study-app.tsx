@@ -345,7 +345,7 @@ export function StudyApp() {
             </h1>
           </div>
           <p className="truncate text-xs text-muted-foreground">
-            Gemini 3.5 Flash via Vercel AI Gateway
+            Gemini 3.5 Flash via the direct Gemini API
           </p>
         </div>
 
