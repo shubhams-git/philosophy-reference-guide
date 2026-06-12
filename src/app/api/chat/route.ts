@@ -7,6 +7,12 @@ import {
   finalizeGroundedAnswer,
   type ApiChatMessage,
 } from "@/lib/grounding";
+import {
+  MAX_ASSISTANT_MESSAGE_CHARACTERS,
+  MAX_CHAT_MESSAGES,
+  MAX_CONVERSATION_CHARACTERS,
+  MAX_USER_MESSAGE_CHARACTERS,
+} from "@/lib/chat-limits";
 import { retrieveSources, type RetrievedSource } from "@/lib/source-retrieval";
 import { curriculumSnapshot } from "@/lib/syllabus";
 
@@ -14,9 +20,6 @@ export const runtime = "nodejs";
 export const maxDuration = 60;
 
 const MODEL_ID = "gemini-3-flash-preview";
-const MAX_MESSAGES = 20;
-const MAX_TOTAL_CHARACTERS = 12_000;
-const MAX_MESSAGE_CHARACTERS = 4_000;
 
 let googleClient: GoogleGenAI | null = null;
 
@@ -48,10 +51,13 @@ function validateMessages(value: unknown):
     };
   }
 
-  if (value.length > MAX_MESSAGES) {
+  if (value.length > MAX_CHAT_MESSAGES) {
     return {
       ok: false,
-      response: jsonError(`A maximum of ${MAX_MESSAGES} messages is allowed.`, 400),
+      response: jsonError(
+        `A maximum of ${MAX_CHAT_MESSAGES} messages is allowed.`,
+        400
+      ),
     };
   }
 
@@ -74,11 +80,15 @@ function validateMessages(value: unknown):
     }
 
     const content = item.content.trim();
-    if (!content || content.length > MAX_MESSAGE_CHARACTERS) {
+    const characterLimit =
+      item.role === "user"
+        ? MAX_USER_MESSAGE_CHARACTERS
+        : MAX_ASSISTANT_MESSAGE_CHARACTERS;
+    if (!content || content.length > characterLimit) {
       return {
         ok: false,
         response: jsonError(
-          `Each message must contain between 1 and ${MAX_MESSAGE_CHARACTERS} characters.`,
+          `${item.role === "user" ? "User" : "Assistant"} messages must contain between 1 and ${characterLimit} characters.`,
           400
         ),
       };
@@ -88,11 +98,11 @@ function validateMessages(value: unknown):
     messages.push({ role: item.role, content });
   }
 
-  if (totalCharacters > MAX_TOTAL_CHARACTERS) {
+  if (totalCharacters > MAX_CONVERSATION_CHARACTERS) {
     return {
       ok: false,
       response: jsonError(
-        `The conversation may contain at most ${MAX_TOTAL_CHARACTERS} characters.`,
+        `The conversation may contain at most ${MAX_CONVERSATION_CHARACTERS} characters.`,
         400
       ),
     };
