@@ -18,6 +18,12 @@ import {
 } from "react";
 
 import { ChatMessage, type DisplayMessage } from "@/components/chat-message";
+import {
+  MAX_ASSISTANT_MESSAGE_CHARACTERS,
+  MAX_CHAT_MESSAGES,
+  MAX_CONVERSATION_CHARACTERS,
+  MAX_USER_MESSAGE_CHARACTERS,
+} from "@/lib/chat-limits";
 
 const STORAGE_KEY = "logic-tutor-chat-v2";
 
@@ -111,14 +117,27 @@ function buildRequestMessages(messages: DisplayMessage[]): Array<{
   const selected: Array<{ role: DisplayMessage["role"]; content: string }> = [];
   let totalCharacters = 0;
 
-  for (let index = messages.length - 1; index >= 0 && selected.length < 20; index--) {
+  for (
+    let index = messages.length - 1;
+    index >= 0 && selected.length < MAX_CHAT_MESSAGES;
+    index--
+  ) {
     const { role, content } = messages[index];
-    if (totalCharacters + content.length > 12_000) {
+    const characterLimit =
+      role === "user"
+        ? MAX_USER_MESSAGE_CHARACTERS
+        : MAX_ASSISTANT_MESSAGE_CHARACTERS;
+    const normalizedContent = content.trim().slice(0, characterLimit);
+
+    if (
+      !normalizedContent ||
+      totalCharacters + normalizedContent.length > MAX_CONVERSATION_CHARACTERS
+    ) {
       break;
     }
 
-    selected.unshift({ role, content });
-    totalCharacters += content.length;
+    selected.unshift({ role, content: normalizedContent });
+    totalCharacters += normalizedContent.length;
   }
 
   while (selected[0]?.role === "assistant") {
