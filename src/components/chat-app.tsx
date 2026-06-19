@@ -21,8 +21,11 @@ import { ChatMessage, type DisplayMessage } from "@/components/chat-message";
 import {
   MAX_ASSISTANT_MESSAGE_CHARACTERS,
   MAX_CHAT_MESSAGES,
-  MAX_CONVERSATION_CHARACTERS,
   MAX_USER_MESSAGE_CHARACTERS,
+  REQUEST_ASSISTANT_EXCERPT_CHARACTERS,
+  REQUEST_CONVERSATION_CHARACTERS,
+  REQUEST_MEMORY_CHARACTERS,
+  REQUEST_RECENT_MESSAGE_COUNT,
 } from "@/lib/chat-limits";
 
 const STORAGE_KEY = "logic-tutor-chat-v2";
@@ -110,35 +113,128 @@ function errorMessage(value: unknown): string {
   return "The response could not be completed.";
 }
 
+function cleanForMemory(content: string): string {
+  return content
+    .replace(/```[\s\S]*?```/g, " ")
+    .replace(/\[([^\]]+)]\(([^)]+)\)/g, "$1")
+    .replace(/[#>*_`~|]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function excerpt(content: string, limit: number): string {
+  const cleaned = cleanForMemory(content);
+  if (cleaned.length <= limit) {
+    return cleaned;
+  }
+
+  return `${cleaned.slice(0, limit - 1).trimEnd()}…`;
+}
+
+function importantAssistantExcerpt(content: string): string {
+  const cleaned = cleanForMemory(content);
+  if (cleaned.length <= REQUEST_ASSISTANT_EXCERPT_CHARACTERS) {
+    return cleaned;
+  }
+
+  const importantLines = content
+    .split(/\r?\n/)
+    .map(cleanForMemory)
+    .filter((line) =>
+      /^(in simple words|analogy|where the analogy stops|quick self-check)\b/i.test(
+        line
+      )
+    );
+  const importantText = importantLines.length
+    ? ` Key teaching points: ${importantLines.join(" ")}`
+    : "";
+  const head = excerpt(
+    cleaned,
+    Math.max(900, REQUEST_ASSISTANT_EXCERPT_CHARACTERS - importantText.length - 80)
+  );
+  const shortened = `${head}${importantText}`;
+
+  return `Previous tutor response, shortened for context: ${excerpt(
+    shortened,
+    REQUEST_ASSISTANT_EXCERPT_CHARACTERS
+  )}`;
+}
+
+function memoryLine(message: DisplayMessage): string {
+  if (message.role === "user") {
+    return `User asked: ${excerpt(message.content, 260)}`;
+  }
+
+  return `Tutor explained: ${excerpt(message.content, 420)}`;
+}
+
+function buildConversationMemory(messages: DisplayMessage[]): string | null {
+  if (messages.length === 0) {
+    return null;
+  }
+
+  const lines: string[] = [];
+  let characterCount = 0;
+
+  for (let index = messages.length - 1; index >= 0; index--) {
+    const line = `- ${memoryLine(messages[index])}`;
+    if (characterCount + line.length > REQUEST_MEMORY_CHARACTERS) {
+      break;
+    }
+
+    lines.unshift(line);
+    characterCount += line.length;
+  }
+
+  if (lines.length === 0) {
+    return null;
+  }
+
+  return [
+    "Conversation memory from earlier turns. Use this only as background, not as the latest question.",
+    ...lines,
+  ].join("\n");
+}
+
 function buildRequestMessages(messages: DisplayMessage[]): Array<{
   role: DisplayMessage["role"];
   content: string;
 }> {
   const selected: Array<{ role: DisplayMessage["role"]; content: string }> = [];
+  const recentSelected: Array<{ role: DisplayMessage["role"]; content: string }> = [];
   let totalCharacters = 0;
+  const recentMessages = messages.slice(-REQUEST_RECENT_MESSAGE_COUNT);
+  const olderMessages = messages.slice(0, -REQUEST_RECENT_MESSAGE_COUNT);
+  const memory = buildConversationMemory(olderMessages);
 
-  for (
-    let index = messages.length - 1;
-    index >= 0 && selected.length < MAX_CHAT_MESSAGES;
-    index--
-  ) {
-    const { role, content } = messages[index];
-    const characterLimit =
+  if (memory) {
+    selected.push({ role: "user", content: memory });
+    totalCharacters += memory.length;
+  }
+
+  for (let index = recentMessages.length - 1; index >= 0; index--) {
+    if (selected.length + recentSelected.length >= MAX_CHAT_MESSAGES) {
+      break;
+    }
+
+    const { role, content } = recentMessages[index];
+    const normalizedContent =
       role === "user"
-        ? MAX_USER_MESSAGE_CHARACTERS
-        : MAX_ASSISTANT_MESSAGE_CHARACTERS;
-    const normalizedContent = content.trim().slice(0, characterLimit);
+        ? content.trim().slice(0, MAX_USER_MESSAGE_CHARACTERS)
+        : importantAssistantExcerpt(content).slice(0, MAX_ASSISTANT_MESSAGE_CHARACTERS);
 
     if (
       !normalizedContent ||
-      totalCharacters + normalizedContent.length > MAX_CONVERSATION_CHARACTERS
+      totalCharacters + normalizedContent.length > REQUEST_CONVERSATION_CHARACTERS
     ) {
       break;
     }
 
-    selected.unshift({ role, content: normalizedContent });
+    recentSelected.unshift({ role, content: normalizedContent });
     totalCharacters += normalizedContent.length;
   }
+
+  selected.push(...recentSelected);
 
   while (selected[0]?.role === "assistant") {
     selected.shift();
